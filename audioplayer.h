@@ -32,21 +32,22 @@ public:
     void stopPlay(); // 结束播放
 
     void saveWaveFile(QString &fileName); // 保存文件
-    void clearBuffer(); // 清除缓冲区
+    void clearRecordBuffer(); // 清除缓冲区
 
     explicit AudioPlayer(QObject *parent = nullptr);
     ~AudioPlayer();
 private:
     static constexpr int WAVEHDR_NUM = 4;
     static constexpr int WAVEHDR_SIZE = 1024 * 4; // 4KB
-    static constexpr int BUFFER_SIZE = 1024 * 1024 * 2; // 2MB
+    static constexpr int BUFFER_SIZE = 1024 * 1024; // 1MB
 
     HWAVEIN hWaveIn;
     HWAVEOUT hWaveOut;
 
     std::ofstream ofs;
     std::ifstream ifs;
-    std::vector<BYTE> buffer;
+    std::vector<BYTE> recordBuffer; // 录制音频缓冲区
+    char playBuffer[WAVEHDR_SIZE]; // 播放音频缓冲区, 用作WAVEHDR.lpData指向的数据块
     std::vector<PWAVEHDR> waveHeaders;
 
     // 回调处理录制的音频数据
@@ -68,6 +69,8 @@ private:
     void wirteWaveHeader(UINT sampleRate, UINT bitDepth, UINT nChannel);
     // 读取wave文件头信息, 返回文件格式信息
     WAVEFORMATEX readWaveHeader();
+    // 播放下一块数据
+    void playNextBlock();
 
     /*
      * WAV 文件头结构体
@@ -86,18 +89,18 @@ private:
      * Subchunk2ID: 4 字节，表示子块2标识符，一般为 "data"。
      * Subchunk2Size: 4 字节，表示音频数据的大小（不包括前面的文件头大小）。
      * */
-    struct WAVHeader {
+    struct WAVFileHeader {
         char ChunkID[4] = {'R', 'I', 'F', 'F'};  // 文件标识符，"RIFF"
-        uint32_t ChunkSize = sizeof(WAVHeader) - 8;// 文件大小，不包括 ChunkID 和 ChunkSize 字段本身
+        uint32_t ChunkSize = 0;// 文件大小，不包括 ChunkID 和 ChunkSize 字段本身, 录制完毕后修改
         char Format[4] = {'W', 'A', 'V', 'E'};   // 文件格式，"WAVE"
         char Subchunk1ID[4] = {'f', 'm', 't', ' '};  // 格式块标识符，"fmt "
         uint32_t Subchunk1Size = 16;             // 格式块大小，固定为 16
         uint16_t AudioFormat = 1;                // 音频格式，PCM 格式为 1
         uint16_t NumChannels;                    // 声道数
         uint32_t SampleRate;                     // 采样率
-        uint16_t BitsPerSample;                  // 位深
         uint32_t ByteRate;                       // 每秒的数据量
         uint16_t BlockAlign;                     // 数据块对齐
+        uint16_t BitsPerSample;                  // 位深
         char Subchunk2ID[4] = {'d', 'a', 't', 'a'};  // 数据块标识符，"data"
         uint32_t Subchunk2Size = 0;              // 音频数据的大小(初始大小为0, 录制完毕后修改)
     };

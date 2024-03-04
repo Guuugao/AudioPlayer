@@ -82,7 +82,7 @@ void Dialog::configSignalAndSlot(){
                     ui->logBrowser->append("cancle save file");
                 }
             }
-            this->audioplayer.clearBuffer();
+            this->audioplayer.clearRecordBuffer();
             this->ui->timeLCD->display("00:00:000");
         } else if (this->audioplayer.isPlaying){ // 正在播放
             // 停止播放, 关闭设备...
