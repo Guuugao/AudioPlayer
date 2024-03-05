@@ -21,8 +21,8 @@ void Dialog::configSignalAndSlot(){
             ui->logBrowser->append("is playing");
         } else { // 无任务
             this->timer.start(10); // 10ms更新一次计时显示
-
             ui->logBrowser->append("start record");
+
             this->audioplayer.startRecord(this->ui->channelBox->currentData().toInt(),
                                           this->ui->bitDepthEdit->text().toInt(),
                                           this->ui->sampleRateEdit->text().toInt(),
@@ -85,7 +85,11 @@ void Dialog::configSignalAndSlot(){
             this->audioplayer.clearRecordBuffer();
             this->ui->timeLCD->display("00:00:000");
         } else if (this->audioplayer.isPlaying){ // 正在播放
-            // 停止播放, 关闭设备...
+            this->timer.stop();
+            this->audioplayer.stopPlay();
+
+            ui->logBrowser->append("stop play");
+            this->ui->timeLCD->display("00:00:000");
         } else { // 没有任务
             ui->logBrowser->append("is not playing or recording");
         }
@@ -93,18 +97,43 @@ void Dialog::configSignalAndSlot(){
 
     // TODO 播放时选择播放文件
     connect(ui->playBtn, &QPushButton::clicked, this, [this](){
-        if (this->audioplayer.isRecording || this->audioplayer.isPlaying){
-            return;
-        }
+        if (this->audioplayer.isRecording){
+            ui->logBrowser->append("is recording");
+        } else if (this->audioplayer.isPlaying){
+            ui->logBrowser->append("is playing");
+        } else {
+            QString fileName = QFileDialog::getOpenFileName(this, "Open File", "", "WAV Files (*.wav)");
+            if (!fileName.isEmpty()) {
+                this->timer.start(10); // 10ms更新一次计时显示
+                ui->logBrowser->append("start play");
 
-        qDebug() << "play clicked...";
+                this->audioplayer.startPlay(fileName,
+                                            ui->waveOutDeviceBox->currentData().toInt());
+            } else {
+                ui->logBrowser->append("cancle open file");
+            }
+        }
     });
 
-    // TODO 播放和录制的计时逻辑稍有不同
     connect(&this->timer, &QTimer::timeout, ui->timeLCD, [=](){
-        QTime diff = QTime(0, 0, 0, 0)
-                         .addMSecs(this->audioplayer.startTime.msecsTo(QTime::currentTime()));
-        ui->timeLCD->display(diff.toString("mm:ss:zzz"));
+        if (audioplayer.isRecording) {
+            // 已录制时长
+            int recordedDuration = this->audioplayer.startTime.msecsTo(QTime::currentTime());
+            QTime show = QTime(0, 0, 0, 0) .addMSecs(recordedDuration);
+            ui->timeLCD->display(show.toString("mm:ss:zzz"));
+        } else if (audioplayer.isPlaying) {
+            // 已播放时长, 当前时间与开始播放时间之差
+            int playedDuration = this->audioplayer.startTime.msecsTo(QTime::currentTime());
+            int remainingDuration = this->audioplayer.audioDuration - playedDuration;
+            if (remainingDuration <= 0) {
+                this->timer.stop();
+                audioplayer.stopPlay();
+                this->ui->timeLCD->display("00:00:000");
+            } else {
+                QTime show = QTime(0, 0, 0, 0) .addMSecs(remainingDuration);
+                ui->timeLCD->display(show.toString("mm:ss:zzz"));
+            }
+        }
     });
 }
 

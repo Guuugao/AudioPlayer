@@ -16,6 +16,7 @@ signals:
 public:
     QTime startTime; // 开始录制/播放的时间
     QTime pauseTime; // 暂停操作开始的时间
+    int audioDuration; // 音频文件时长(ms)
 
     bool isRecording = false; // 是否正在录制
     bool isPlaying = false; // 是否正在播放
@@ -37,9 +38,9 @@ public:
     explicit AudioPlayer(QObject *parent = nullptr);
     ~AudioPlayer();
 private:
-    static constexpr int WAVEHDR_NUM = 4;
-    static constexpr int WAVEHDR_SIZE = 1024 * 4; // 4KB
-    static constexpr int BUFFER_SIZE = 1024 * 1024; // 1MB
+    static constexpr int RECORD_WAVEHDR_NUM = 4;
+    static constexpr int WAVEHDR_SIZE = 1024 * 16; // 16KB
+    static constexpr int BUFFER_SIZE = 1024 * 1024 * 2; // 2MB
 
     HWAVEIN hWaveIn;
     HWAVEOUT hWaveOut;
@@ -47,8 +48,10 @@ private:
     std::ofstream ofs;
     std::ifstream ifs;
     std::vector<BYTE> recordBuffer; // 录制音频缓冲区
-    char playBuffer[WAVEHDR_SIZE]; // 播放音频缓冲区, 用作WAVEHDR.lpData指向的数据块
-    std::vector<PWAVEHDR> waveHeaders;
+    std::vector<PWAVEHDR> recordWaveHeaders; // 录制缓冲区数组
+    PWAVEHDR currPlayWaveHeader; // 当前正在使用的缓冲区下标
+    PWAVEHDR playWaveHeader_1; // 一号播放缓冲区
+    PWAVEHDR playWaveHeader_2; // 二号播放缓冲区
 
     // 回调处理录制的音频数据
     static void CALLBACK waveInProc(
@@ -67,10 +70,8 @@ private:
 
     // 写入wave文件头信息
     void wirteWaveHeader(UINT sampleRate, UINT bitDepth, UINT nChannel);
-    // 读取wave文件头信息, 返回文件格式信息
+    // 读取wave文件头信息, 返回文件格式信息, 填充文件时长数据(ms)
     WAVEFORMATEX readWaveHeader();
-    // 播放下一块数据
-    void playNextBlock();
 
     /*
      * WAV 文件头结构体
