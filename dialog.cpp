@@ -13,6 +13,7 @@ Dialog::Dialog(QWidget *parent)
     configSignalAndSlot();
 }
 
+// TODO 关闭事件需要先停止录制/播放
 void Dialog::configSignalAndSlot(){
     connect(ui->recordBtn, &QPushButton::clicked, &this->audioplayer, [this](){
         if (this->audioplayer.isRecording){ // 当前有任务, 必须等待任务完成
@@ -20,7 +21,7 @@ void Dialog::configSignalAndSlot(){
         } else if (this->audioplayer.isPlaying){
             ui->logBrowser->append("is playing");
         } else { // 无任务
-            this->timer.start(10); // 10ms更新一次计时显示
+            this->timer.start(refreshInterval); // 1s更新一次计时显示
             ui->logBrowser->append("start record");
 
             this->audioplayer.startRecord(this->ui->channelBox->currentData().toInt(),
@@ -29,7 +30,7 @@ void Dialog::configSignalAndSlot(){
                                           this->ui->waveInDeviceBox->currentData().toInt());
         }
     });
-    // TODO 暂停和结束按钮通用, 需要判断当前在录音还是播放
+
     connect(ui->pauseBtn, &QPushButton::clicked, &this->audioplayer, [this](){
         if (this->audioplayer.isRecording) { // 正在录音
             if (!this->audioplayer.isPausing) {
@@ -66,36 +67,36 @@ void Dialog::configSignalAndSlot(){
 
     connect(ui->stopBtn, &QPushButton::clicked, &this->audioplayer, [this](){
         if (this->audioplayer.isRecording) { // 正在录音
-            this->timer.stop();
             this->audioplayer.stopRecord();
-
+            this->timer.stop();
+            QString fileName = "";
             ui->logBrowser->append("stop record");
             if(QMessageBox::Save == QMessageBox::question(this, "question",
                                                            "Do you want to save the recorded audio?",
                                                            QMessageBox::Save | QMessageBox::Cancel,
                                                            QMessageBox::Save)){
-                QString fileName = QFileDialog::getSaveFileName(this, "Save Audio File", "", "WAV Files (*.wav)");
+                fileName = QFileDialog::getSaveFileName(this, "Save Audio File", "", "WAV Files (*.wav)");
                 if (!fileName.isEmpty()) {
                     this->audioplayer.saveWaveFile(fileName);
-                    ui->logBrowser->append("save file: " + fileName);
+                    ui->logBrowser->append("save " + fileName);
                 } else {
-                    ui->logBrowser->append("cancle save file");
+                    ui->logBrowser->append("cancle");
                 }
             }
-            this->audioplayer.clearRecordBuffer();
-            this->ui->timeLCD->display("00:00:000");
+            this->audioplayer.clearData();
+            this->ui->timeLCD->display("00:00:00");
         } else if (this->audioplayer.isPlaying){ // 正在播放
             this->timer.stop();
             this->audioplayer.stopPlay();
 
             ui->logBrowser->append("stop play");
-            this->ui->timeLCD->display("00:00:000");
+            this->ui->timeLCD->display("00:00:00");
         } else { // 没有任务
             ui->logBrowser->append("is not playing or recording");
         }
     });
 
-    // TODO 播放时选择播放文件
+    // TODO 播放时显示比特率, 采样率等信息
     connect(ui->playBtn, &QPushButton::clicked, this, [this](){
         if (this->audioplayer.isRecording){
             ui->logBrowser->append("is recording");
@@ -104,7 +105,7 @@ void Dialog::configSignalAndSlot(){
         } else {
             QString fileName = QFileDialog::getOpenFileName(this, "Open File", "", "WAV Files (*.wav)");
             if (!fileName.isEmpty()) {
-                this->timer.start(10); // 10ms更新一次计时显示
+                this->timer.start(refreshInterval); // 1s更新一次计时显示
                 ui->logBrowser->append("start play");
 
                 this->audioplayer.startPlay(fileName,
@@ -118,20 +119,25 @@ void Dialog::configSignalAndSlot(){
     connect(&this->timer, &QTimer::timeout, ui->timeLCD, [=](){
         if (audioplayer.isRecording) {
             // 已录制时长
-            int recordedDuration = this->audioplayer.startTime.msecsTo(QTime::currentTime());
-            QTime show = QTime(0, 0, 0, 0) .addMSecs(recordedDuration);
-            ui->timeLCD->display(show.toString("mm:ss:zzz"));
+            int recorded = this->audioplayer.startTime.msecsTo(QTime::currentTime());
+            QTime show = QTime(0, 0, 0, 0) .addMSecs(recorded);
+            ui->timeLCD->display(show.toString("hh:mm:ss"));
         } else if (audioplayer.isPlaying) {
             // 已播放时长, 当前时间与开始播放时间之差
-            int playedDuration = this->audioplayer.startTime.msecsTo(QTime::currentTime());
-            int remainingDuration = this->audioplayer.audioDuration - playedDuration;
-            if (remainingDuration <= 0) {
+            int played = this->audioplayer.startTime.msecsTo(QTime::currentTime());
+            int remaining = this->audioplayer.audioDuration - played;
+
+            // 四舍五入到最接近的整秒
+            int seconds = qRound(static_cast<double>(remaining) / 1000.0);
+
+            if (remaining <= 0) {
                 this->timer.stop();
                 audioplayer.stopPlay();
-                this->ui->timeLCD->display("00:00:000");
+                this->ui->timeLCD->display("00:00:00");
+                ui->logBrowser->append("stop play");
             } else {
-                QTime show = QTime(0, 0, 0, 0) .addMSecs(remainingDuration);
-                ui->timeLCD->display(show.toString("mm:ss:zzz"));
+                QTime show = QTime(0, 0, 0, 0) .addSecs(seconds);
+                ui->timeLCD->display(show.toString("hh:mm:ss"));
             }
         }
     });
@@ -155,11 +161,19 @@ void Dialog::configUI(){
     ui->channelBox->addItem("单声道", 1);
     ui->channelBox->addItem("双声道", 2);
 
-    ui->timeLCD->display("00:00:000");
+    ui->timeLCD->display("00:00:00");
 
     // 添加验证器, 只允许输入整数
     ui->bitDepthEdit->setValidator(new QIntValidator(ui->bitDepthEdit));
     ui->sampleRateEdit->setValidator(new QIntValidator(ui->bitDepthEdit));
+}
+
+void Dialog::closeEvent(QCloseEvent *event){
+    if (this->audioplayer.isPlaying) {
+        this->audioplayer.stopPlay();
+    } else if (this->audioplayer.isRecording) {
+        this->audioplayer.stopRecord();
+    }
 }
 
 Dialog::~Dialog(){

@@ -25,10 +25,14 @@ private:
     Ui::Dialog *ui;
     AudioPlayer audioplayer;
     QTimer timer;
+    // 刷新计时器的时间间隔
+    constexpr static int refreshInterval = 1000;
 
     // 连接信号与槽
     void configSignalAndSlot();
     // 添加与设定控件
     void configUI();
+    // 关闭窗口时释放资源
+    void closeEvent(QCloseEvent *event) override;
 };
 #endif // DIALOG_H

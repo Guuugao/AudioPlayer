@@ -24,11 +24,13 @@ void AudioPlayer::startRecord(UINT nChannel, UINT bitDepth, UINT sampleRate, UIN
     }
 
     // 3. 准备缓冲区
+    this->recordBlockSize = waveFormat.nAvgBytesPerSec * BASE_SECOND; // 8s的数据量
     for (int i = 0; i < RECORD_WAVEHDR_NUM; ++i) {
         WAVEHDR* waveHeader = new WAVEHDR();
         ZeroMemory(waveHeader, sizeof(WAVEHDR));
-        waveHeader->lpData = new char[WAVEHDR_SIZE];
-        waveHeader->dwBufferLength = WAVEHDR_SIZE;
+        waveHeader->lpData = new char[this->recordBlockSize];
+        ZeroMemory(waveHeader->lpData, this->recordBlockSize);
+        waveHeader->dwBufferLength = this->recordBlockSize;
 
         waveInPrepareHeader(this->hWaveIn, waveHeader, sizeof(WAVEHDR));
         waveInAddBuffer(this->hWaveIn, waveHeader, sizeof(WAVEHDR));
@@ -65,9 +67,7 @@ void AudioPlayer::stopRecord(){
 
     if (this->hWaveIn != nullptr) {
         // 停止录制
-        MMRESULT res;
-        res = waveInStop(this->hWaveIn);
-        qDebug() << "stopRecord-waveInStop: return code " << res;
+        waveInStop(this->hWaveIn);
         /*
         官方文档: waveInReset 函数停止给定波形音频输入设备上的输入，并将当前位置重置为零。
                 所有挂起的缓冲区都标记为已完成并返回到应用程序。
@@ -78,9 +78,21 @@ void AudioPlayer::stopRecord(){
         解决办法: WIM_DATA中判断isRecording, 若是, 则读取数据后将缓冲区重新加入缓冲区, 否则读取数据后直接跳出
         * */
         waveInReset(this->hWaveIn);
+
+        // 清理录音缓冲区
+        for (auto waveHeader: this->recordWaveHeaders) {
+            waveInUnprepareHeader(this->hWaveIn, waveHeader, sizeof(WAVEHDR));
+            delete[] waveHeader->lpData;
+            delete waveHeader;
+        }
+        this->recordWaveHeaders.clear();
+
         // 关闭音频输入设备
-        res = waveInClose(this->hWaveIn);
-        qDebug() << "stopRecord-waveInClose: return code " << res;
+        waveInClose(this->hWaveIn);
+
+        // 相关成员置空
+        this->recordBlockSize = 0;
+        this->hWaveIn = nullptr;
     }
 }
 
@@ -106,25 +118,11 @@ void CALLBACK AudioPlayer::waveInProc(
         }
         break;
     }
-    case WIM_OPEN: {
-        break;
-    }
-    case WIM_CLOSE: {
-        // 清理录音缓冲区
-        for (auto waveHeader: audioplayer->recordWaveHeaders) {
-            waveInUnprepareHeader(hwi, waveHeader, sizeof(WAVEHDR));
-            delete[] waveHeader->lpData;
-            delete waveHeader;
-        }
-        audioplayer->recordWaveHeaders.clear();
-        audioplayer->hWaveIn = nullptr;
-        break;
-    }
     }
 }
 
 void AudioPlayer::saveWaveFile(QString &fileName){
-    ofs.open(fileName.toStdString(), std::ios::binary);
+    ofs.open(fileName.toStdString(), std::ios::binary | std::ios::trunc);
     if (!ofs.is_open()) {
         qDebug() << "open file error";
         return;
@@ -132,20 +130,20 @@ void AudioPlayer::saveWaveFile(QString &fileName){
 
     // 计算并更新 WAV 文件头中的数据大小信息
     this->ofs.write(reinterpret_cast<const char*>(this->recordBuffer.data()), this->recordBuffer.size());
-    int dataSize = static_cast<int>(this->ofs.tellp()) - sizeof(WAVFileHeader); // 文件大小减去头部44字节
+    uint32_t dataSize = static_cast<uint32_t>(this->ofs.tellp()) - sizeof(WAVFileHeader); // 文件大小减去头部44字节
     this->ofs.seekp(40, std::ios::beg); // 移动到 Subchunk2Size 的位置
     this->ofs.write(reinterpret_cast<const char*>(&dataSize), 4); // 更新 Subchunk2Size
     this->ofs.seekp(4, std::ios::beg); // 移动到 ChunkSize 的位置
-    int chunkSize = sizeof(WAVFileHeader) - 8 + dataSize;
+    uint32_t chunkSize = sizeof(WAVFileHeader) - 8 + dataSize;
     this->ofs.write(reinterpret_cast<const char*>(&chunkSize), 4); // 更新 Subchunk2Size
 
     this->ofs.close();
     this->ofs.clear();
 }
 
-void AudioPlayer::clearRecordBuffer(){
-    // 收缩空间
-    std::vector<BYTE>(BUFFER_SIZE).swap(this->recordBuffer);
+void AudioPlayer::clearData(){
+    // 清除录制数据
+    std::vector<BYTE>(RECORD_BUFFER_SIZE).swap(this->recordBuffer);
     this->recordBuffer.clear();
 }
 
@@ -181,36 +179,39 @@ void AudioPlayer::startPlay(QString& fileName, UINT deviceID){
 
     WAVEFORMATEX waveFormat = readWaveHeader();
     // 打开 WaveOut 设备
-    // 第二次打开失败
-    if (waveOutOpen(&this->hWaveOut, deviceID, &waveFormat,
-                    reinterpret_cast<DWORD_PTR>(&AudioPlayer::waveOutProc),
-                    reinterpret_cast<DWORD_PTR>(this),
-                    CALLBACK_FUNCTION) != MMSYSERR_NOERROR) {
+    MMRESULT res = waveOutOpen(&this->hWaveOut, deviceID, &waveFormat,
+                reinterpret_cast<DWORD_PTR>(&AudioPlayer::waveOutProc),
+                reinterpret_cast<DWORD_PTR>(this),
+                               CALLBACK_FUNCTION);
+    if (res != MMSYSERR_NOERROR) { // MMSYSERR_INVALPARAM
         qDebug() << "Failed to open wave out device";
         return;
     }
 
     // 准备双缓冲区
+    this->playBlockSize = waveFormat.nAvgBytesPerSec * BASE_SECOND; // 4s的数据量
     this->playWaveHeader_1 = new WAVEHDR();
     ZeroMemory(this->playWaveHeader_1, sizeof(WAVEHDR));
-    this->playWaveHeader_1->lpData = new char[WAVEHDR_SIZE];
-    this->playWaveHeader_1->dwBufferLength = WAVEHDR_SIZE;
+    this->playWaveHeader_1->lpData = new char[this->playBlockSize];
+    this->playWaveHeader_1->dwBufferLength = this->playBlockSize;
     waveOutPrepareHeader(this->hWaveOut, this->playWaveHeader_1, sizeof(WAVEHDR));
 
     this->playWaveHeader_2 = new WAVEHDR();
     ZeroMemory(this->playWaveHeader_2, sizeof(WAVEHDR));
-    this->playWaveHeader_2->lpData = new char[WAVEHDR_SIZE];
-    this->playWaveHeader_2->dwBufferLength = WAVEHDR_SIZE;
+    this->playWaveHeader_2->lpData = new char[this->playBlockSize];
+    this->playWaveHeader_2->dwBufferLength = this->playBlockSize;
     waveOutPrepareHeader(this->hWaveOut, this->playWaveHeader_2, sizeof(WAVEHDR));
     // 当前缓冲区设置为一号
     this->currPlayWaveHeader = this->playWaveHeader_1;
 
     // 填充第一块数据
-    this->ifs.read(this->playWaveHeader_1->lpData, WAVEHDR_SIZE);
+    this->ifs.read(this->playWaveHeader_1->lpData, this->playBlockSize);
     this->playWaveHeader_1->dwBytesRecorded = this->ifs.gcount();
     // 填充第二块数据
-    this->ifs.read(this->playWaveHeader_2->lpData, WAVEHDR_SIZE);
+    this->ifs.read(this->playWaveHeader_2->lpData, this->playBlockSize);
     this->playWaveHeader_2->dwBytesRecorded = this->ifs.gcount();
+
+    this->fillThread = std::thread(&AudioPlayer::fillNextWaveHeader, this);
     // 播放当前块
     waveOutWrite(this->hWaveOut, this->playWaveHeader_1, sizeof(WAVEHDR));
 }
@@ -236,10 +237,35 @@ void AudioPlayer::stopPlay(){
     if (this->hWaveOut != nullptr) {
         // 停止录制
         waveOutReset(this->hWaveOut);
+        // 等待线程结束
+        if (this->fillThread.joinable()) {
+            this->fillCV.notify_all();
+            this->fillThread.join();
+        }
+
+        // 清理播放缓冲区
+        waveOutUnprepareHeader(this->hWaveOut, this->playWaveHeader_1, sizeof(WAVEHDR));
+        delete[] this->playWaveHeader_1->lpData;
+        delete this->playWaveHeader_1;
+
+        waveOutUnprepareHeader(this->hWaveOut, this->playWaveHeader_2, sizeof(WAVEHDR));
+        delete[] this->playWaveHeader_2->lpData;
+        delete this->playWaveHeader_2;
 
         // 关闭音频输入设备
-        MMRESULT res = waveOutClose(this->hWaveOut);
-        qDebug() << "stopPlay-waveOutClose: return code " << res;
+        waveOutClose(this->hWaveOut);
+
+        // 相关成员置空
+        if (this->ifs.is_open()) {
+            this->ifs.close();
+            this->ifs.clear();
+        }
+        this->currPlayWaveHeader = nullptr;
+        this->playWaveHeader_1 = nullptr;
+        this->playWaveHeader_2 = nullptr;
+
+        this->hWaveOut = nullptr;
+        this->playBlockSize = 0;
     }
 }
 
@@ -255,44 +281,19 @@ void AudioPlayer::waveOutProc(
     if (audioplayer->isPlaying) {
         switch (uMsg) {
         case WOM_DONE: {
-            PWAVEHDR playedWaveHeader = reinterpret_cast<PWAVEHDR>(dwParam1);
-            // 填充已使用块
-            audioplayer->ifs.read(playedWaveHeader->lpData, WAVEHDR_SIZE);
-            // 记录预填充块大小, 下次回调再检查是否有数据
-            playedWaveHeader->dwBytesRecorded = audioplayer->ifs.gcount();
+            // 切换下一个缓冲区
+            audioplayer->currPlayWaveHeader = audioplayer->nextWaveHeader();
 
-            // 切换下一个待播放数据块
-            audioplayer->currPlayWaveHeader = (playedWaveHeader == audioplayer->playWaveHeader_1) ?
-
-                audioplayer->playWaveHeader_2 : audioplayer->playWaveHeader_1;
-            // 若下一个待播放数据块无数据, 则结束播放
-            if (audioplayer->currPlayWaveHeader->dwBytesRecorded <= 0) {
-                audioplayer->stopPlay();
-                return;
-            }
-            // 播放下一块
+            // 播放下一个缓冲区
             waveOutWrite(hwo, audioplayer->currPlayWaveHeader, sizeof(WAVEHDR));
+            // 通知填充线程开始填充下一个缓冲区
+            audioplayer->fillCV.notify_one();
 
-            break;
-        }
-        case WOM_OPEN: {
-            break;
-        }
-        case WOM_CLOSE:{
-            // 清理播放缓冲区
-            waveOutUnprepareHeader(hwo, audioplayer->playWaveHeader_1, sizeof(WAVEHDR));
-            delete[] audioplayer->playWaveHeader_1->lpData;
-            delete audioplayer->playWaveHeader_1;
-
-            waveOutUnprepareHeader(hwo, audioplayer->playWaveHeader_2, sizeof(WAVEHDR));
-            delete[] audioplayer->playWaveHeader_2->lpData;
-            delete audioplayer->playWaveHeader_2;
-
-            audioplayer->currPlayWaveHeader = nullptr;
-            audioplayer->playWaveHeader_1 = nullptr;
-            audioplayer->playWaveHeader_2 = nullptr;
-
-            audioplayer->hWaveOut = nullptr;
+            // 若下一个待播放数据块无数据, 则结束播放
+            // 检查是否所有缓冲区都已经播放完毕，如果是，则停止播放
+            if ((audioplayer->playWaveHeader_1->dwFlags & WHDR_DONE) && (audioplayer->playWaveHeader_2->dwFlags & WHDR_DONE)) {
+                audioplayer->stopPlay();
+            }
             break;
         }
         }
@@ -301,6 +302,7 @@ void AudioPlayer::waveOutProc(
 
 WAVEFORMATEX AudioPlayer::readWaveHeader(){
     WAVFileHeader header;
+    ZeroMemory(&header, sizeof(WAVFileHeader));
     // 读取头信息
     this->ifs.read(reinterpret_cast<char*>(&header), sizeof(WAVFileHeader));
 
@@ -313,9 +315,37 @@ WAVEFORMATEX AudioPlayer::readWaveHeader(){
     waveFormat.nAvgBytesPerSec = header.ByteRate; // 每秒的平均字节数
     waveFormat.cbSize = 0;                    // 无附加信息
 
-    // 视频时长(ms): 数据部分大小 * 1000 / 每秒比特率
-    this->audioDuration = header.Subchunk2Size * 1000 / header.ByteRate;
+    // 视频时长(ms)
+    this->audioDuration = static_cast<uint64_t>(header.Subchunk2Size) * 1000 / header.ByteRate;
     return waveFormat;
+}
+
+void AudioPlayer::fillNextWaveHeader(){
+    while (this->isPlaying) {
+        std::unique_lock<std::mutex> lock(this->fillMutex);
+
+        // 等待条件满足，即一个缓冲区已经播放完毕
+        this->fillCV.wait(lock, [this] {
+            return (this->playWaveHeader_1->dwFlags & WHDR_DONE) || (this->playWaveHeader_2->dwFlags & WHDR_DONE);
+        });
+
+        if (this->isPlaying) {
+            if (this->playWaveHeader_1->dwFlags & WHDR_DONE) {
+                this->ifs.read(this->playWaveHeader_1->lpData, this->playBlockSize);
+                this->playWaveHeader_1->dwBytesRecorded = ifs.gcount();
+                this->playWaveHeader_1->dwFlags &= ~WHDR_DONE; // 清除 WHDR_DONE 标志位，表示数据已经填充
+            } else if (this->playWaveHeader_2->dwFlags & WHDR_DONE) {
+                this->ifs.read(this->playWaveHeader_2->lpData, this->playBlockSize);
+                this->playWaveHeader_2->dwBytesRecorded = ifs.gcount();
+                this->playWaveHeader_2->dwFlags &= ~WHDR_DONE; // 清除 WHDR_DONE 标志位，表示数据已经填充
+            }
+        }
+    }
+}
+
+PWAVEHDR AudioPlayer::nextWaveHeader(){
+    return (this->currPlayWaveHeader == this->playWaveHeader_1) ?
+        this->playWaveHeader_2 : this->playWaveHeader_1;
 }
 
 AudioPlayer::AudioPlayer(QObject *parent)
@@ -323,12 +353,15 @@ AudioPlayer::AudioPlayer(QObject *parent)
     this->hWaveIn = nullptr;
     this->hWaveOut = nullptr;
 
+    this->recordBlockSize = 0;
+    this->playBlockSize = 0;
+
     this->currPlayWaveHeader = nullptr;
     this->playWaveHeader_1 = nullptr;
     this->playWaveHeader_2 = nullptr;
 
     this->recordWaveHeaders.reserve(RECORD_WAVEHDR_NUM);
-    this->recordBuffer.reserve(BUFFER_SIZE);
+    this->recordBuffer.reserve(RECORD_BUFFER_SIZE);
 }
 
 AudioPlayer::~AudioPlayer(){
