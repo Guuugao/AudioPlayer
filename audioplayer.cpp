@@ -24,7 +24,7 @@ void AudioPlayer::startRecord(UINT nChannel, UINT bitDepth, UINT sampleRate, UIN
     }
 
     // 3. 准备缓冲区
-    this->recordBlockSize = waveFormat.nAvgBytesPerSec * BASE_SECOND; // 8s的数据量
+    this->recordBlockSize = waveFormat.nAvgBytesPerSec * BASE_SECOND;
     for (int i = 0; i < RECORD_WAVEHDR_NUM; ++i) {
         WAVEHDR* waveHeader = new WAVEHDR();
         ZeroMemory(waveHeader, sizeof(WAVEHDR));
@@ -201,8 +201,6 @@ void AudioPlayer::startPlay(QString& fileName, UINT deviceID){
     this->playWaveHeader_2->lpData = new char[this->playBlockSize];
     this->playWaveHeader_2->dwBufferLength = this->playBlockSize;
     waveOutPrepareHeader(this->hWaveOut, this->playWaveHeader_2, sizeof(WAVEHDR));
-    // 当前缓冲区设置为一号
-    this->currPlayWaveHeader = this->playWaveHeader_1;
 
     // 填充第一块数据
     this->ifs.read(this->playWaveHeader_1->lpData, this->playBlockSize);
@@ -211,9 +209,14 @@ void AudioPlayer::startPlay(QString& fileName, UINT deviceID){
     this->ifs.read(this->playWaveHeader_2->lpData, this->playBlockSize);
     this->playWaveHeader_2->dwBytesRecorded = this->ifs.gcount();
 
-    this->fillThread = std::thread(&AudioPlayer::fillNextWaveHeader, this);
-    // 播放当前块
+    /*
+    问题： 缓冲区切换时会有轻微卡顿
+    解决要点： 保证播放队列中时刻都有一个缓冲区，
+    这里先将两块数据都加入队列， 然后在回调函数中填充播放完毕的缓冲区并再次加入队列， 即可完成流畅播放
+    */
+    // 将两个缓冲区加入播放队列
     waveOutWrite(this->hWaveOut, this->playWaveHeader_1, sizeof(WAVEHDR));
+    waveOutWrite(this->hWaveOut, this->playWaveHeader_2, sizeof(WAVEHDR));
 }
 
 void AudioPlayer::pausePlay(){
@@ -237,12 +240,6 @@ void AudioPlayer::stopPlay(){
     if (this->hWaveOut != nullptr) {
         // 停止录制
         waveOutReset(this->hWaveOut);
-        // 等待线程结束
-        if (this->fillThread.joinable()) {
-            this->fillCV.notify_all();
-            this->fillThread.join();
-        }
-
         // 清理播放缓冲区
         waveOutUnprepareHeader(this->hWaveOut, this->playWaveHeader_1, sizeof(WAVEHDR));
         delete[] this->playWaveHeader_1->lpData;
@@ -260,7 +257,6 @@ void AudioPlayer::stopPlay(){
             this->ifs.close();
             this->ifs.clear();
         }
-        this->currPlayWaveHeader = nullptr;
         this->playWaveHeader_1 = nullptr;
         this->playWaveHeader_2 = nullptr;
 
@@ -279,23 +275,21 @@ void AudioPlayer::waveOutProc(
     AudioPlayer* audioplayer = reinterpret_cast<AudioPlayer*>(dwInstance);
     // 解决死锁, 停止播放后不写入数据
     if (audioplayer->isPlaying) {
-        switch (uMsg) {
-        case WOM_DONE: {
-            // 切换下一个缓冲区
-            audioplayer->currPlayWaveHeader = audioplayer->nextWaveHeader();
+        if (uMsg == WOM_DONE) {
+            PWAVEHDR used = reinterpret_cast<PWAVEHDR>(dwParam1);
 
-            // 播放下一个缓冲区
-            waveOutWrite(hwo, audioplayer->currPlayWaveHeader, sizeof(WAVEHDR));
-            // 通知填充线程开始填充下一个缓冲区
-            audioplayer->fillCV.notify_one();
+            // 重新填充
+            audioplayer->ifs.read(used->lpData, audioplayer->playBlockSize);
+            used->dwBytesRecorded = audioplayer->ifs.gcount();
+            used->dwFlags &= ~WHDR_DONE; // 清除 WHDR_DONE 标志位，表示数据已经填充
 
-            // 若下一个待播放数据块无数据, 则结束播放
+            // 重新加入播放队列
+            waveOutWrite(hwo, used, sizeof(WAVEHDR));
+
             // 检查是否所有缓冲区都已经播放完毕，如果是，则停止播放
             if ((audioplayer->playWaveHeader_1->dwFlags & WHDR_DONE) && (audioplayer->playWaveHeader_2->dwFlags & WHDR_DONE)) {
                 audioplayer->stopPlay();
             }
-            break;
-        }
         }
     }
 }
@@ -315,37 +309,9 @@ WAVEFORMATEX AudioPlayer::readWaveHeader(){
     waveFormat.nAvgBytesPerSec = header.ByteRate; // 每秒的平均字节数
     waveFormat.cbSize = 0;                    // 无附加信息
 
-    // 视频时长(ms)
+    // 视频时长(ms), 为了防止溢出, 需要先转换为uint64_t进行计算
     this->audioDuration = static_cast<uint64_t>(header.Subchunk2Size) * 1000 / header.ByteRate;
     return waveFormat;
-}
-
-void AudioPlayer::fillNextWaveHeader(){
-    while (this->isPlaying) {
-        std::unique_lock<std::mutex> lock(this->fillMutex);
-
-        // 等待条件满足，即一个缓冲区已经播放完毕
-        this->fillCV.wait(lock, [this] {
-            return (this->playWaveHeader_1->dwFlags & WHDR_DONE) || (this->playWaveHeader_2->dwFlags & WHDR_DONE);
-        });
-
-        if (this->isPlaying) {
-            if (this->playWaveHeader_1->dwFlags & WHDR_DONE) {
-                this->ifs.read(this->playWaveHeader_1->lpData, this->playBlockSize);
-                this->playWaveHeader_1->dwBytesRecorded = ifs.gcount();
-                this->playWaveHeader_1->dwFlags &= ~WHDR_DONE; // 清除 WHDR_DONE 标志位，表示数据已经填充
-            } else if (this->playWaveHeader_2->dwFlags & WHDR_DONE) {
-                this->ifs.read(this->playWaveHeader_2->lpData, this->playBlockSize);
-                this->playWaveHeader_2->dwBytesRecorded = ifs.gcount();
-                this->playWaveHeader_2->dwFlags &= ~WHDR_DONE; // 清除 WHDR_DONE 标志位，表示数据已经填充
-            }
-        }
-    }
-}
-
-PWAVEHDR AudioPlayer::nextWaveHeader(){
-    return (this->currPlayWaveHeader == this->playWaveHeader_1) ?
-        this->playWaveHeader_2 : this->playWaveHeader_1;
 }
 
 AudioPlayer::AudioPlayer(QObject *parent)
@@ -356,7 +322,6 @@ AudioPlayer::AudioPlayer(QObject *parent)
     this->recordBlockSize = 0;
     this->playBlockSize = 0;
 
-    this->currPlayWaveHeader = nullptr;
     this->playWaveHeader_1 = nullptr;
     this->playWaveHeader_2 = nullptr;
 

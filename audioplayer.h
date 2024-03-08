@@ -25,7 +25,6 @@ public:
     bool isPlaying = false; // 是否正在播放
     bool isPausing = false; // 是否暂停
 
-    // TODO 录制是否会卡顿?
     void startRecord(UINT nChannel, UINT bitDepth, UINT sampleRate, UINT deviceID); // 开始录制
     void pauseRecord(); // 暂停录制
     void continueRecord(); // 继续录制
@@ -55,16 +54,10 @@ private:
     HWAVEIN hWaveIn;
     HWAVEOUT hWaveOut;
 
-    // 用于多线程填充数据块
-    std::mutex fillMutex;
-    std::condition_variable fillCV;
-    std::thread fillThread;
-
     std::ofstream ofs;
     std::ifstream ifs;
     std::vector<BYTE> recordBuffer; // 录制音频缓冲区
     std::vector<PWAVEHDR> recordWaveHeaders; // 录制缓冲区数组
-    PWAVEHDR currPlayWaveHeader; // 当前正在使用的缓冲区下标
     PWAVEHDR playWaveHeader_1; // 一号播放缓冲区
     PWAVEHDR playWaveHeader_2; // 二号播放缓冲区
 
@@ -87,13 +80,6 @@ private:
     void wirteWaveHeader(UINT sampleRate, UINT bitDepth, UINT nChannel);
     // 读取wave文件头信息, 返回文件格式信息, 填充文件时长数据(ms)
     WAVEFORMATEX readWaveHeader();
-    // 播放当前数据块时, 异步加载另一个数据块
-    // 需要在nextWaveHeader之后调用
-    // TODO 还是会轻微卡顿, 尝试多缓冲区或者检查一下异步填充速度与播放速度是否匹配
-    // (多缓冲区可以根据数据块状态进行填充, 一旦检测到一个缓冲区用完, 则填充他, 否则阻塞等待)
-    void fillNextWaveHeader();
-    // 将当前块指针指向下一块未播放的数据块, 需要传递上一个播放完毕的块指针
-    PWAVEHDR nextWaveHeader();
 
     /*
      * WAV 文件头结构体
