@@ -25,7 +25,7 @@ public:
     bool isPlaying = false; // 是否正在播放
     bool isPausing = false; // 是否暂停
 
-    void startRecord(UINT nChannel, UINT bitDepth, UINT sampleRate, UINT deviceID); // 开始录制
+    bool startRecord(UINT nChannel, UINT bitDepth, UINT sampleRate, UINT deviceID); // 开始录制
     void pauseRecord(); // 暂停录制
     void continueRecord(); // 继续录制
     void stopRecord(); // 结束录制, 传入文件名不为空则保存文件
@@ -33,7 +33,7 @@ public:
     void saveWaveFile(QString &fileName); // 保存文件
     void clearData(); // 清除recordBuffer数据
 
-    void startPlay(QString& fileName, UINT deviceID); // 开始播放
+    bool startPlay(QString& fileName, UINT deviceID); // 开始播放
     void pausePlay(); // 暂停播放
     void continuePlay(); // 继续播放
     void stopPlay(); // 结束播放

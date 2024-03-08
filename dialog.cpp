@@ -21,13 +21,15 @@ void Dialog::configSignalAndSlot(){
         } else if (this->audioplayer.isPlaying){
             ui->logBrowser->append("is playing");
         } else { // 无任务
-            this->timer.start(refreshInterval); // 1s更新一次计时显示
-            ui->logBrowser->append("start record");
-
-            this->audioplayer.startRecord(this->ui->channelBox->currentData().toInt(),
+            if (this->audioplayer.startRecord(this->ui->channelBox->currentData().toInt(),
                                           this->ui->bitDepthEdit->text().toInt(),
                                           this->ui->sampleRateEdit->text().toInt(),
-                                          this->ui->waveInDeviceBox->currentData().toInt());
+                                              this->ui->waveInDeviceBox->currentData().toInt())){
+                this->timer.start(refreshInterval); // 1s更新一次计时显示
+                ui->logBrowser->append("start record");
+            } else {
+                ui->logBrowser->append("error to start record!");
+            }
         }
     });
 
@@ -105,11 +107,13 @@ void Dialog::configSignalAndSlot(){
         } else {
             QString fileName = QFileDialog::getOpenFileName(this, "Open File", "", "WAV Files (*.wav)");
             if (!fileName.isEmpty()) {
-                this->timer.start(refreshInterval); // 1s更新一次计时显示
-                ui->logBrowser->append("start play");
-
-                this->audioplayer.startPlay(fileName,
-                                            ui->waveOutDeviceBox->currentData().toInt());
+                if (this->audioplayer.startPlay(fileName,
+                                                ui->waveOutDeviceBox->currentData().toInt())){
+                    this->timer.start(refreshInterval); // 1s更新一次计时显示
+                    ui->logBrowser->append("start play");
+                } else {
+                    ui->logBrowser->append("error to start play");
+                }
             } else {
                 ui->logBrowser->append("cancle open file");
             }
@@ -147,14 +151,14 @@ void Dialog::configUI(){
     int iAudioDev = waveInGetNumDevs();    //获取输入设备数量
     for (int i = 0; i < iAudioDev; i++){
         WAVEINCAPS wic;
-        waveInGetDevCaps(i, &wic, sizeof(WAVEINCAPS));   //注意，i即为DeviceID
+        waveInGetDevCaps(i, &wic, sizeof(WAVEINCAPS));   //i即为DeviceID
         ui->waveInDeviceBox->addItem(QString::fromWCharArray(wic.szPname), i);
     }
 
     int oAudioDev = waveOutGetNumDevs();    //获取输出设备数量
     for (int i = 0; i < oAudioDev; i++){
         WAVEOUTCAPS woc;
-        waveOutGetDevCaps(i, &woc, sizeof(WAVEOUTCAPS));   //注意，i即为DeviceID
+        waveOutGetDevCaps(i, &woc, sizeof(WAVEOUTCAPS));   //i即为DeviceID
         ui->waveOutDeviceBox->addItem(QString::fromWCharArray(woc.szPname), i);
     }
 

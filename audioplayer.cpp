@@ -1,8 +1,6 @@
 #include "audioplayer.h"
 
-void AudioPlayer::startRecord(UINT nChannel, UINT bitDepth, UINT sampleRate, UINT deviceID){
-    this->isRecording = true; // 开始录制
-
+bool AudioPlayer::startRecord(UINT nChannel, UINT bitDepth, UINT sampleRate, UINT deviceID){
     // 0. 记录开始时间
     this->startTime = QTime::currentTime();
     // 1. 设置音频格式
@@ -20,7 +18,7 @@ void AudioPlayer::startRecord(UINT nChannel, UINT bitDepth, UINT sampleRate, UIN
                    reinterpret_cast<DWORD_PTR>(&AudioPlayer::waveInProc),
                    reinterpret_cast<DWORD_PTR>(this), CALLBACK_FUNCTION) != MMSYSERR_NOERROR) {
         qDebug() << "Failed to open wave in device";
-        return;
+        return false;
     }
 
     // 3. 准备缓冲区
@@ -43,8 +41,12 @@ void AudioPlayer::startRecord(UINT nChannel, UINT bitDepth, UINT sampleRate, UIN
     // 5. 开始录制
     if (waveInStart(this->hWaveIn) != MMSYSERR_NOERROR) {
         qDebug() << "Failed to start record";
-        return;
+        return false;
     }
+    // 开始录制
+    this->isRecording = true;
+
+    return true;
 }
 
 void AudioPlayer::pauseRecord(){
@@ -165,16 +167,14 @@ void AudioPlayer::wirteWaveHeader(UINT sampleRate, UINT bitDepth, UINT nChannel)
 
 
 
-void AudioPlayer::startPlay(QString& fileName, UINT deviceID){
-    this->isPlaying = true; // 开始播放
-
+bool AudioPlayer::startPlay(QString& fileName, UINT deviceID){
     // 0. 记录开始时间
     this->startTime = QTime::currentTime();
 
     this->ifs.open(fileName.toStdString(), std::ios::binary);
     if (!this->ifs.is_open()) {
         qDebug() << "open file error";
-        return;
+        return false;
     }
 
     WAVEFORMATEX waveFormat = readWaveHeader();
@@ -185,7 +185,7 @@ void AudioPlayer::startPlay(QString& fileName, UINT deviceID){
                                CALLBACK_FUNCTION);
     if (res != MMSYSERR_NOERROR) { // MMSYSERR_INVALPARAM
         qDebug() << "Failed to open wave out device";
-        return;
+        return false;
     }
 
     // 准备双缓冲区
@@ -217,6 +217,10 @@ void AudioPlayer::startPlay(QString& fileName, UINT deviceID){
     // 将两个缓冲区加入播放队列
     waveOutWrite(this->hWaveOut, this->playWaveHeader_1, sizeof(WAVEHDR));
     waveOutWrite(this->hWaveOut, this->playWaveHeader_2, sizeof(WAVEHDR));
+
+    // 开始播放
+    this->isPlaying = true;
+    return true;
 }
 
 void AudioPlayer::pausePlay(){

@@ -10,15 +10,18 @@ CONFIG += c++17
 
 SOURCES += \
     audioplayer.cpp \
+    form.cpp \
     main.cpp \
     dialog.cpp
 
 HEADERS += \
     audioplayer.h \
-    dialog.h
+    dialog.h \
+    form.h
 
 FORMS += \
-    dialog.ui
+    dialog.ui \
+    form.ui
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
